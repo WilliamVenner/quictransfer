@@ -1,6 +1,6 @@
 use std::{io::Write, path::PathBuf, net::SocketAddr, str::FromStr, time::Instant, sync::Arc};
 use futures_util::StreamExt;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncSeekExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 struct SkipServerVerification;
 impl SkipServerVerification {
@@ -38,21 +38,18 @@ fn server(path: PathBuf) {
         let mut f = tokio::fs::File::open(path).await.unwrap();
         let size = f.metadata().await.unwrap().len();
 
-        while let Some(connection) = incoming.next().await {
-            f.seek(std::io::SeekFrom::Start(0)).await.unwrap();
+        let connection = incoming.next().await.unwrap();
+        let connection = connection.await.unwrap();
+        let mut tx = connection.connection.open_uni().await.unwrap();
 
-            let connection = connection.await.unwrap();
-            let mut tx = connection.connection.open_uni().await.unwrap();
+        tx.write_u64_le(size).await.unwrap();
 
-            tx.write_u64_le(size).await.unwrap();
+        let start = Instant::now();
+        tokio::io::copy(&mut f, &mut tx).await.unwrap();
+        let start = start.elapsed();
+        println!("File sent in {start:?} ({} bytes/s)", size as f64 / start.as_secs_f64());
 
-            let start = Instant::now();
-            tokio::io::copy(&mut f, &mut tx).await.unwrap();
-            let start = start.elapsed();
-            println!("File sent in {start:?} ({} bytes/s)", size as f64 / start.as_secs_f64());
-
-            endpoint.wait_idle().await;
-        }
+        endpoint.wait_idle().await;
     });
 }
 
@@ -70,36 +67,30 @@ fn client() {
 
         let mut endpoint = quinn::Endpoint::client(SocketAddr::from_str("0.0.0.0:0").unwrap()).unwrap();
 
-        for (name, suite) in &[
-            ("TLS13_CHACHA20_POLY1305_SHA256", rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256),
-            ("TLS13_AES_128_GCM_SHA256", rustls::cipher_suite::TLS13_AES_128_GCM_SHA256),
-            ("TLS13_AES_256_GCM_SHA384", rustls::cipher_suite::TLS13_AES_256_GCM_SHA384),
-        ] {
-            endpoint.set_default_client_config(quinn::ClientConfig::new(
-                Arc::new(rustls::ClientConfig::builder()
-                    .with_cipher_suites(&[*suite])
-                    .with_safe_default_kx_groups()
-                    .with_safe_default_protocol_versions()
-                    .unwrap()
-                    .with_custom_certificate_verifier(SkipServerVerification::new())
-                    .with_no_client_auth())
-            ));
+        endpoint.set_default_client_config(quinn::ClientConfig::new(
+            Arc::new(rustls::ClientConfig::builder()
+                .with_cipher_suites(&[rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256])
+                .with_safe_default_kx_groups()
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_custom_certificate_verifier(SkipServerVerification::new())
+                .with_no_client_auth())
+        ));
 
-            let mut connection = endpoint.connect(ip_port, "quictransfer").unwrap().await.unwrap();
-            let mut rx = connection.uni_streams.next().await.unwrap().unwrap();
+        let mut connection = endpoint.connect(ip_port, "quictransfer").unwrap().await.unwrap();
+        let mut rx = connection.uni_streams.next().await.unwrap().unwrap();
 
-            let size = rx.read_u64_le().await.unwrap();
+        let size = rx.read_u64_le().await.unwrap();
 
-            let mut f = tokio::fs::File::create("received.bin").await.unwrap();
+        let mut f = tokio::fs::File::create("received.bin").await.unwrap();
 
-            let start = Instant::now();
-            tokio::io::copy(&mut rx.take(size), &mut f).await.unwrap();
-            let start = start.elapsed();
-            println!("[{name}] File received in {start:?} ({} bytes/s)", size as f64 / start.as_secs_f64());
+        let start = Instant::now();
+        tokio::io::copy(&mut rx.take(size), &mut f).await.unwrap();
+        let start = start.elapsed();
+        println!("File received in {start:?} ({} bytes/s)", size as f64 / start.as_secs_f64());
 
-            connection.connection.close(quinn::VarInt::from_u32(0), &[]);
-            endpoint.wait_idle().await;
-        }
+        connection.connection.close(quinn::VarInt::from_u32(0), &[]);
+        endpoint.wait_idle().await;
     });
 }
 
