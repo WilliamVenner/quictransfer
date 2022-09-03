@@ -1,0 +1,15 @@
+[package]
+name = "quictransfer"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+[dependencies]
+quinn = { version = "0.8", default-features = false, features = ["tls-rustls", "ring"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "fs", "io-util"] }
+rustls = { version = "0.20", features = ["dangerous_configuration", "quic"] }
+rcgen = "0.9"
+futures-util = "0"
