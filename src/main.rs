@@ -71,7 +71,7 @@ fn client() {
             Arc::new(rustls::ClientConfig::builder()
                 .with_cipher_suites(&[rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256])
                 .with_safe_default_kx_groups()
-                .with_safe_default_protocol_versions()
+                .with_protocol_versions(&[&rustls::version::TLS13])
                 .unwrap()
                 .with_custom_certificate_verifier(SkipServerVerification::new())
                 .with_no_client_auth())
